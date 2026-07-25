@@ -316,10 +316,60 @@
       return url;
     };
 
+
+    const base64UrlEncode = str => {
+      const utf8 = new TextEncoder().encode(str);
+      let bin = "";
+      utf8.forEach(b => bin += String.fromCharCode(b));
+      return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+    };
+
+    const base64UrlDecode = str => {
+      try{
+        str = String(str || "").replace(/-/g,"+").replace(/_/g,"/");
+        while(str.length % 4) str += "=";
+        const bin = atob(str);
+        const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+      }catch(err){ return ""; }
+    };
+
+    function petSharePayload(pet){
+      if(!pet) return "";
+      return base64UrlEncode(JSON.stringify({
+        code:pet.code,
+        name:pet.name,
+        breed:pet.breed,
+        color:pet.color,
+        age:pet.age,
+        sex:pet.sex,
+        whatsapp:pet.whatsapp,
+        district:pet.district,
+        address:pet.address,
+        reward:pet.reward,
+        photo:pet.photo,
+        createdAt:pet.createdAt,
+        updatedAt:pet.updatedAt
+      }));
+    }
+
+    function petFromSharedLink(code){
+      const data = new URLSearchParams(location.search).get("data");
+      if(!data) return null;
+      try{
+        const pet = JSON.parse(base64UrlDecode(data));
+        if(!pet || !pet.code) return null;
+        if(pet.code.replace("#","") !== String(code).replace("#","")) return null;
+        return pet;
+      }catch(err){ return null; }
+    }
+
     const profileURL = code => {
       const id = String(code).replace("#", "");
       const url = baseURL();
+      const pet = getPets().find(p => p.code.replace("#","") === id);
       url.searchParams.set("mascota", id);
+      if(pet) url.searchParams.set("data", petSharePayload(pet));
       url.hash = `mascota/${id}`;
       return url.toString();
     };
@@ -440,9 +490,24 @@
     function previewPhoto(e){
       const file=e.target.files[0];
       if(!file) return;
-      if(file.size > 2.5*1024*1024){ notify("La imagen debe pesar menos de 2.5 MB."); e.target.value=""; return; }
+      if(file.size > 4*1024*1024){ notify("La imagen debe pesar menos de 4 MB."); e.target.value=""; return; }
       const reader=new FileReader();
-      reader.onload=()=>{ pendingPhoto=reader.result; $("#photoPreview").innerHTML=`<img src="${pendingPhoto}" alt="Vista previa">`; };
+      reader.onload=()=>{
+        const img=new Image();
+        img.onload=()=>{
+          const max=850;
+          let w=img.width, h=img.height;
+          if(w>h && w>max){ h=Math.round(h*max/w); w=max; }
+          else if(h>=w && h>max){ w=Math.round(w*max/h); h=max; }
+          const canvas=document.createElement("canvas");
+          canvas.width=w; canvas.height=h;
+          const ctx=canvas.getContext("2d");
+          ctx.drawImage(img,0,0,w,h);
+          pendingPhoto=canvas.toDataURL("image/jpeg",0.72);
+          $("#photoPreview").innerHTML=`<img src="${pendingPhoto}" alt="Vista previa">`;
+        };
+        img.src=reader.result;
+      };
       reader.readAsDataURL(file);
     }
 
@@ -477,7 +542,8 @@
       try{
         savePets(pets);
         notify(editingCode ? "Cambios guardados correctamente." : `Mascota registrada correctamente con el código ${code}.`);
-        location.hash=`mascota/${code.replace("#","")}`;
+        const share = profileURL(code);
+        history.pushState(null,"",share);
         render();
       }catch(err){
         showFormError("No se pudo guardar. Prueba con una imagen más liviana.");
@@ -487,7 +553,14 @@
     function showFormError(message){ $("#formNotice").innerHTML=`<div class="notice error">${escapeHTML(message)}</div>`; window.scrollTo({top:0,behavior:"smooth"}); }
 
     function publicView(code){
-      const pet=getPets().find(p=>p.code.replace("#","")===code);
+      let pet=getPets().find(p=>p.code.replace("#","")===code);
+      if(!pet){
+        pet=petFromSharedLink(code);
+        if(pet){
+          const pets=getPets();
+          if(!pets.some(p=>p.code===pet.code)) savePets([pet,...pets]);
+        }
+      }
       if(!pet) return notFoundView();
       const wa=pet.whatsapp.replace(/\D/g,"");
       const message=encodeURIComponent(`Hola, vi la plaquita de ${pet.name} (${pet.code}).`);
@@ -643,7 +716,7 @@
       closeModal(); notify("Credenciales actualizadas.");
     }
 
-    function notFoundView(){ return `${nav()}<main class="container section"><section class="glass-card admin-login"><h2>Perfil no encontrado</h2><p>El código indicado no existe o fue eliminado.</p><button class="btn btn-primary" onclick="goHome()">Volver al inicio</button></section></main>`; }
+    function notFoundView(){ return `${nav()}<main class="container section"><section class="glass-card admin-login"><h2>Perfil no encontrado</h2><p>Este enlace no contiene los datos de la mascota o el registro fue eliminado. Copia el enlace desde el botón de copiar enlace del panel administrador.</p><button class="btn btn-primary" onclick="goHome()">Volver al inicio</button></section></main>`; }
 
     function copyPetLink(code){
       const link = profileURL(code);
